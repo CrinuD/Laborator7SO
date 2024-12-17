@@ -1,113 +1,110 @@
-#include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdbool.h>
-#include <process.h> // Pentru _beginthreadex
+#include <pthread.h>
+#include <semaphore.h>
+#include <unistd.h>
 
 // Tipurile de fir
 #define WHITE 0
 #define BLACK 1
 
 // Variabile globale pentru sincronizare
-HANDLE resource_mutex;
-HANDLE queue_semaphore;
+pthread_mutex_t resource_mutex = PTHREAD_MUTEX_INITIALIZER;
+sem_t white_queue, black_queue;
 
-int active_white = 0; // număr de fire albe active
-int active_black = 0; // număr de fire negre active
-int waiting_white = 0; // fire albe în așteptare
-int waiting_black = 0; // fire negre în așteptare
+int active_white = 0;   // numar de fire albe active
+int active_black = 0;   // numar de fire negre active
+int waiting_white = 0;  // fire albe in asteptare
+int waiting_black = 0;  // fire negre in asteptare
+int turn = WHITE;       // Politica de alternanta
 
-unsigned __stdcall thread_function(void* arg) {
-    int type = *(int*)arg;
+void *thread_function(void *arg) {
+    int type = *(int *)arg;
 
     if (type == WHITE) {
-        WaitForSingleObject(resource_mutex, INFINITE);
+        pthread_mutex_lock(&resource_mutex);
         waiting_white++;
-        // Așteaptă până când nu mai sunt fire negre active
-        while (active_black > 0) {
-            ReleaseMutex(resource_mutex);
-            WaitForSingleObject(queue_semaphore, INFINITE);
-            WaitForSingleObject(resource_mutex, INFINITE);
+        while (active_black > 0 || (turn == BLACK && waiting_black > 0)) {
+            pthread_mutex_unlock(&resource_mutex);
+            sem_wait(&white_queue);
+            pthread_mutex_lock(&resource_mutex);
         }
         waiting_white--;
         active_white++;
-        ReleaseMutex(resource_mutex);
+        turn = BLACK;  // Schimba prioritatea catre BLACK
+        pthread_mutex_unlock(&resource_mutex);
 
-        // Utilizează resursa
+        // Utilizeaza resursa
         printf("White thread using resource.\n");
-        Sleep(1000);
+        sleep(1);
 
-        WaitForSingleObject(resource_mutex, INFINITE);
+        pthread_mutex_lock(&resource_mutex);
         active_white--;
-        // Eliberează resursa pentru altele
-        if (active_white == 0 && waiting_black > 0) {
-            for (int i = 0; i < waiting_black; i++) {
-                ReleaseSemaphore(queue_semaphore, 1, NULL);
+        if (active_white == 0) {
+            // Elibereaza firele negre daca exista in asteptare
+            while (waiting_black > 0) {
+                sem_post(&black_queue);
+                waiting_black--;
             }
         }
-        ReleaseMutex(resource_mutex);
+        pthread_mutex_unlock(&resource_mutex);
 
-    }
-    else if (type == BLACK) {
-        WaitForSingleObject(resource_mutex, INFINITE);
+    } else if (type == BLACK) {
+        pthread_mutex_lock(&resource_mutex);
         waiting_black++;
-        // Așteaptă până când nu mai sunt fire albe active
-        while (active_white > 0) {
-            ReleaseMutex(resource_mutex);
-            WaitForSingleObject(queue_semaphore, INFINITE);
-            WaitForSingleObject(resource_mutex, INFINITE);
+        while (active_white > 0 || (turn == WHITE && waiting_white > 0)) {
+            pthread_mutex_unlock(&resource_mutex);
+            sem_wait(&black_queue);
+            pthread_mutex_lock(&resource_mutex);
         }
         waiting_black--;
         active_black++;
-        ReleaseMutex(resource_mutex);
+        turn = WHITE;  // Schimba prioritatea catre WHITE
+        pthread_mutex_unlock(&resource_mutex);
 
-        // Utilizează resursa
+        // Utilizeaza resursa
         printf("Black thread using resource.\n");
-        Sleep(1000);
+        sleep(1);
 
-        WaitForSingleObject(resource_mutex, INFINITE);
+        pthread_mutex_lock(&resource_mutex);
         active_black--;
-        // Eliberează resursa pentru altele
-        if (active_black == 0 && waiting_white > 0) {
-            for (int i = 0; i < waiting_white; i++) {
-                ReleaseSemaphore(queue_semaphore, 1, NULL);
+        if (active_black == 0) {
+            // Elibereaza firele albe daca exista in asteptare
+            while (waiting_white > 0) {
+                sem_post(&white_queue);
+                waiting_white--;
             }
         }
-        ReleaseMutex(resource_mutex);
+        pthread_mutex_unlock(&resource_mutex);
     }
 
-    return 0;
+    return NULL;
 }
 
 int main() {
-    HANDLE threads[10];
-    int thread_types[10] = { WHITE, BLACK, WHITE, BLACK, WHITE, WHITE, BLACK, BLACK, WHITE, BLACK };
+    pthread_t threads[20];
+    int thread_types[20];
 
-    // Inițializează mutex-ul și semaforul
-    resource_mutex = CreateMutex(NULL, FALSE, NULL);
-    queue_semaphore = CreateSemaphore(NULL, 0, 10, NULL);
-
-    if (resource_mutex == NULL || queue_semaphore == NULL) {
-        printf("Failed to create synchronization objects.\n");
-        return 1;
+    // Genereaza fire aleatoriu
+    for (int i = 0; i < 20; i++) {
+        thread_types[i] = rand() % 2;
     }
 
-    for (int i = 0; i < 10; i++) {
-        threads[i] = (HANDLE)_beginthreadex(NULL, 0, thread_function, &thread_types[i], 0, NULL);
-        if (threads[i] == NULL) {
-            printf("Failed to create thread %d.\n", i);
-            return 1;
-        }
+    // Initializeaza semafoarele
+    sem_init(&white_queue, 0, 0);
+    sem_init(&black_queue, 0, 0);
+
+    for (int i = 0; i < 20; i++) {
+        pthread_create(&threads[i], NULL, thread_function, &thread_types[i]);
     }
 
-    for (int i = 0; i < 10; i++) {
-        WaitForSingleObject(threads[i], INFINITE);
-        CloseHandle(threads[i]);
+    for (int i = 0; i < 20; i++) {
+        pthread_join(threads[i], NULL);
     }
 
-    // Distruge obiectele de sincronizare
-    CloseHandle(resource_mutex);
-    CloseHandle(queue_semaphore);
+    // Distruge semafoarele
+    sem_destroy(&white_queue);
+    sem_destroy(&black_queue);
 
     return 0;
 }
